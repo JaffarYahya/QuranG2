@@ -14,8 +14,23 @@ import {
   BookOpen,
   Info,
   Eye,
-  EyeOff
+  EyeOff,
+  Database,
+  Download,
+  Upload
 } from "lucide-react";
+
+// دالة للحصول على اسم المجلد الافتراضي من مسار الصفحة الحالي
+const getFolderName = (): string => {
+  const path = window.location.pathname;
+  const segments = path.split("/").filter(Boolean);
+  const lastSegment = segments[segments.length - 1];
+  if (lastSegment && (lastSegment.endsWith(".html") || lastSegment.endsWith(".htm"))) {
+    segments.pop();
+  }
+  const folder = segments[0] || "Quran";
+  return folder.replace(/[^a-zA-Z0-9_\-\u0600-\u06FF\s]/g, "").trim();
+};
 
 // واجهة بيانات صف القارئ الواحد
 interface ReaderRow {
@@ -85,12 +100,25 @@ const ARABIC_MONTHS = [
 ];
 
 export default function App() {
+  // --- تحديد المجلد الافتراضي واسم قاعدة البيانات النشطة ---
+  const defaultFolder = getFolderName();
+  const activeDbKey = "khatma_active_db_" + defaultFolder;
+
+  const [dbName, setDbName] = useState<string>(() => {
+    const saved = localStorage.getItem(activeDbKey);
+    return saved ? saved.trim() : defaultFolder;
+  });
+
   // --- حالة التطبيق الأساسية (State) ---
   const [monthIndex, setMonthIndex] = useState<number>(6); // افتراضي يونيو (6)
   const [readers, setReaders] = useState<ReaderRow[]>([]);
   const [notes, setNotes] = useState<string>("");
   const [isGateUnlocked, setIsGateUnlocked] = useState<boolean>(false);
   const [showWarningsColumn, setShowWarningsColumn] = useState<boolean>(true);
+
+  // حالة التحكم بقاعدة البيانات واللوحة Collapsible
+  const [showDbPanel, setShowDbPanel] = useState<boolean>(false);
+  const [dbNameInput, setDbNameInput] = useState<string>("");
 
   // حالة التحكم في التعديل الفوري للأسماء
   const [editingJuz, setEditingJuz] = useState<number | null>(null);
@@ -132,60 +160,192 @@ export default function App() {
     });
   };
 
-  // --- التحميل الأولي من localStorage ---
+  // تبديل أو تطبيق قاعدة البيانات النشطة
+  const handleSwitchDb = (newDbName: string) => {
+    const sanitized = newDbName.replace(/[^a-zA-Z0-9_\-\u0600-\u06FF\s]/g, "").trim();
+    if (!sanitized) {
+      showAlert("اسم قاعدة البيانات غير صالح.", "warning");
+      return;
+    }
+    localStorage.setItem(activeDbKey, sanitized);
+    setDbName(sanitized);
+    showAlert(`تم الانتقال إلى قاعدة البيانات: ${sanitized}`, "success");
+  };
+
+  // مزامنة حقل الإدخال عند تبديل قاعدة البيانات
   useEffect(() => {
-    const savedMonth = localStorage.getItem("khatma_monthIndex");
-    const savedReaders = localStorage.getItem("khatma_readers");
-    const savedNotes = localStorage.getItem("khatma_notes");
-    const savedGate = localStorage.getItem("khatma_isGateUnlocked");
+    if (dbName) {
+      setDbNameInput(dbName);
+    }
+  }, [dbName]);
 
-    if (savedMonth) setMonthIndex(parseInt(savedMonth, 10));
-    else setMonthIndex(6);
+  // --- التحميل الأولي والربط الذكي بقاعدة البيانات المختارة ---
+  useEffect(() => {
+    if (!dbName) return;
 
-    if (savedReaders) {
-      setReaders(JSON.parse(savedReaders));
+    const readersKey = `khatma_${dbName}_readers`;
+    const monthKey = `khatma_${dbName}_monthIndex`;
+    const notesKey = `khatma_${dbName}_notes`;
+    const gateKey = `khatma_${dbName}_isGateUnlocked`;
+    const warningsKey = `khatma_${dbName}_showWarningsColumn`;
+
+    const savedReaders = localStorage.getItem(readersKey);
+    const savedMonth = localStorage.getItem(monthKey);
+    const savedNotes = localStorage.getItem(notesKey);
+    const savedGate = localStorage.getItem(gateKey);
+    const savedShowWarnings = localStorage.getItem(warningsKey);
+
+    // هجرة البيانات القديمة غير المفصلة (إذا كانت موجودة ولم ننشئ بيانات محددة بعد)
+    const oldReaders = localStorage.getItem("khatma_readers");
+    const oldMonth = localStorage.getItem("khatma_monthIndex");
+    const oldNotes = localStorage.getItem("khatma_notes");
+    const oldGate = localStorage.getItem("khatma_isGateUnlocked");
+    const oldShowWarnings = localStorage.getItem("khatma_showWarningsColumn");
+
+    let finalReaders: ReaderRow[];
+    let finalMonth: number;
+    let finalNotes: string;
+    let finalGate: boolean;
+    let finalShowWarnings: boolean;
+
+    if (!savedReaders && oldReaders) {
+      finalReaders = JSON.parse(oldReaders);
+      finalMonth = oldMonth ? parseInt(oldMonth, 10) : 6;
+      finalNotes = oldNotes !== null ? oldNotes : DEFAULT_NOTES;
+      finalGate = oldGate === "true";
+      finalShowWarnings = oldShowWarnings !== null ? oldShowWarnings === "true" : true;
+
+      // حفظها للمفتاح الجديد
+      localStorage.setItem(readersKey, JSON.stringify(finalReaders));
+      localStorage.setItem(monthKey, finalMonth.toString());
+      localStorage.setItem(notesKey, finalNotes);
+      localStorage.setItem(gateKey, finalGate.toString());
+      localStorage.setItem(warningsKey, finalShowWarnings.toString());
+
+      showAlert(`تم نقل بياناتك السابقة تلقائياً لقاعدة المجلد الحالية (${dbName}).`, "success");
     } else {
-      // إعداد افتراضي أول مرة
-      const initialRows: ReaderRow[] = Array.from({ length: 30 }, (_, i) => ({
-        juz: i + 1,
-        readerName: DEFAULT_READERS_LIST[i] || "",
-        isDone: false,
-        warning1: false,
-        warning2: false,
-        warning3: false,
-      }));
-      setReaders(initialRows);
-      localStorage.setItem("khatma_readers", JSON.stringify(initialRows));
+      if (savedReaders) {
+        finalReaders = JSON.parse(savedReaders);
+      } else {
+        const initialRows: ReaderRow[] = Array.from({ length: 30 }, (_, i) => ({
+          juz: i + 1,
+          readerName: DEFAULT_READERS_LIST[i] || "",
+          isDone: false,
+          warning1: false,
+          warning2: false,
+          warning3: false,
+        }));
+        finalReaders = initialRows;
+        localStorage.setItem(readersKey, JSON.stringify(initialRows));
+      }
+
+      if (savedMonth) {
+        finalMonth = parseInt(savedMonth, 10);
+      } else {
+        finalMonth = 6;
+        localStorage.setItem(monthKey, "6");
+      }
+
+      if (savedNotes !== null) {
+        finalNotes = savedNotes;
+      } else {
+        finalNotes = DEFAULT_NOTES;
+        localStorage.setItem(notesKey, DEFAULT_NOTES);
+      }
+
+      finalGate = savedGate === "true";
+      finalShowWarnings = savedShowWarnings !== null ? savedShowWarnings === "true" : true;
     }
 
-    if (savedNotes !== null) {
-      setNotes(savedNotes);
-    } else {
-      setNotes(DEFAULT_NOTES);
-      localStorage.setItem("khatma_notes", DEFAULT_NOTES);
-    }
-
-    if (savedGate) {
-      setIsGateUnlocked(savedGate === "true");
-    }
-
-    const savedShowWarnings = localStorage.getItem("khatma_showWarningsColumn");
-    if (savedShowWarnings !== null) {
-      setShowWarningsColumn(savedShowWarnings === "true");
-    }
-  }, []);
+    setReaders(finalReaders);
+    setMonthIndex(finalMonth);
+    setNotes(finalNotes);
+    setIsGateUnlocked(finalGate);
+    setShowWarningsColumn(finalShowWarnings);
+  }, [dbName]);
 
   // --- حفظ التغييرات تلقائياً في localStorage ---
   const saveToLocalStorage = (
     updatedReaders: ReaderRow[],
     updatedMonth: number,
     updatedNotes: string,
-    updatedGate: boolean
+    updatedGate: boolean,
+    targetDb = dbName
   ) => {
-    localStorage.setItem("khatma_readers", JSON.stringify(updatedReaders));
-    localStorage.setItem("khatma_monthIndex", updatedMonth.toString());
-    localStorage.setItem("khatma_notes", updatedNotes);
-    localStorage.setItem("khatma_isGateUnlocked", updatedGate.toString());
+    if (!targetDb) return;
+    localStorage.setItem(`khatma_${targetDb}_readers`, JSON.stringify(updatedReaders));
+    localStorage.setItem(`khatma_${targetDb}_monthIndex`, updatedMonth.toString());
+    localStorage.setItem(`khatma_${targetDb}_notes`, updatedNotes);
+    localStorage.setItem(`khatma_${targetDb}_isGateUnlocked`, updatedGate.toString());
+  };
+
+  // تصدير واستيراد البيانات كملفات JSON
+  const handleExportJSON = () => {
+    const data = {
+      dbName,
+      monthIndex,
+      readers,
+      notes,
+      isGateUnlocked,
+      showWarningsColumn
+    };
+    const jsonString = `data:text/json;charset=utf-8,${encodeURIComponent(
+      JSON.stringify(data, null, 2)
+    )}`;
+    const downloadAnchor = document.createElement("a");
+    downloadAnchor.setAttribute("href", jsonString);
+    downloadAnchor.setAttribute("download", `quran_db_${dbName}.json`);
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+    showAlert("تم تصدير ملف نسخة قاعدة البيانات بنجاح!", "success");
+  };
+
+  const handleImportJSON = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileReader = new FileReader();
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    fileReader.onload = (event) => {
+      try {
+        const importedData = JSON.parse(event.target?.result as string);
+        if (
+          importedData &&
+          Array.isArray(importedData.readers) &&
+          typeof importedData.monthIndex === "number"
+        ) {
+          showConfirm(
+            "تأكيد استيراد البيانات",
+            `هل ترغب حقاً في استيراد البيانات؟ هذا سيقوم باستبدال البيانات الحالية في (${dbName}) ببيانات الملف المستورد.`,
+            () => {
+              setReaders(importedData.readers);
+              setMonthIndex(importedData.monthIndex);
+              if (importedData.notes !== undefined) setNotes(importedData.notes);
+              if (importedData.isGateUnlocked !== undefined) setIsGateUnlocked(importedData.isGateUnlocked);
+              if (importedData.showWarningsColumn !== undefined) setShowWarningsColumn(importedData.showWarningsColumn);
+
+              saveToLocalStorage(
+                importedData.readers,
+                importedData.monthIndex,
+                importedData.notes || "",
+                importedData.isGateUnlocked || false,
+                dbName
+              );
+              localStorage.setItem(`khatma_${dbName}_showWarningsColumn`, (importedData.showWarningsColumn ?? true).toString());
+              showAlert("تم استيراد قاعدة البيانات وتطبيقها بنجاح!", "success");
+            },
+            "warning",
+            "استيراد الآن"
+          );
+        } else {
+          showAlert("محتوى ملف JSON غير مطابق للمواصفات المطلوبة.", "warning");
+        }
+      } catch (err) {
+        showAlert("فشل في قراءة وتحليل ملف JSON.", "warning");
+      }
+    };
+    fileReader.readAsText(file);
+    e.target.value = "";
   };
 
   // المساعدة في عرض رسائل التنبيه المؤقتة
@@ -203,7 +363,7 @@ export default function App() {
   const toggleWarningsVisibility = () => {
     const newValue = !showWarningsColumn;
     setShowWarningsColumn(newValue);
-    localStorage.setItem("khatma_showWarningsColumn", newValue.toString());
+    localStorage.setItem(`khatma_${dbName}_showWarningsColumn`, newValue.toString());
     showAlert(newValue ? "تم إظهار عمود الإنذارات." : "تم إخفاء عمود الإنذارات لتسهيل التصفح.", "info");
   };
 
@@ -606,6 +766,20 @@ export default function App() {
             {showWarningsColumn ? "إخفاء الإنذارات" : "إظهار الإنذارات"}
           </button>
 
+          {/* زر إدارة قاعدة البيانات */}
+          <button
+            onClick={() => setShowDbPanel(!showDbPanel)}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border transition-all ${
+              showDbPanel
+                ? "bg-teal-50 text-teal-700 border-teal-200 hover:bg-teal-100"
+                : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+            }`}
+            title="إدارة قواعد البيانات وتصدير/استيراد ملفات التخزين"
+          >
+            <Database size={14} />
+            <span>إدارة التخزين</span>
+          </button>
+
           <button
             onClick={handleResetAll}
             className="flex items-center gap-1.5 px-3 py-2 bg-rose-50 text-rose-600 hover:bg-rose-100 border border-rose-100 rounded-xl text-xs font-semibold transition-all"
@@ -615,6 +789,84 @@ export default function App() {
           </button>
         </div>
       </div>
+
+      {/* --- لوحة إدارة التخزين وقواعد البيانات (Collapsible Panel) --- */}
+      {showDbPanel && (
+        <div
+          data-html2canvas-ignore="true"
+          className="mb-8 p-6 bg-white/80 backdrop-blur-md rounded-3xl border border-teal-100/50 shadow-md shadow-teal-900/5 text-right transition-all animate-fade-in"
+        >
+          <div className="flex items-center justify-between border-b border-slate-100 pb-4 mb-4">
+            <div className="flex items-center gap-2 text-teal-800 font-bold">
+              <Database size={18} />
+              <h3 className="text-sm font-bold">إدارة قاعدة البيانات والتخزين المحلي</h3>
+            </div>
+            <button
+              onClick={() => setShowDbPanel(false)}
+              className="p-1 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-slate-600 transition-colors"
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* جزء تعديل اسم قاعدة البيانات والتبديل */}
+            <div className="flex flex-col gap-2">
+              <label className="text-xs font-bold text-slate-500">اسم قاعدة البيانات النشطة (مساحة التخزين):</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={dbNameInput}
+                  onChange={(e) => setDbNameInput(e.target.value)}
+                  className="flex-1 px-3 py-2 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-teal-500 text-xs text-slate-700"
+                  placeholder="مثال: QuranG1, GroupA..."
+                />
+                <button
+                  onClick={() => handleSwitchDb(dbNameInput)}
+                  className="px-4 py-2 bg-teal-500 hover:bg-teal-600 text-slate-900 font-bold text-xs rounded-xl transition-all"
+                >
+                  تطبيق / تبديل
+                </button>
+              </div>
+              <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
+                * يمكنك كتابة اسم جديد لإنشاء قاعدة بيانات فارغة لهذا المجلد. 
+                اسم المجلد الافتراضي المكتشف: <span className="font-bold text-slate-600 font-mono">{defaultFolder}</span>
+              </p>
+            </div>
+
+            {/* جزء استيراد وتصدير الملفات */}
+            <div className="flex flex-col justify-end gap-3">
+              <label className="text-xs font-bold text-slate-500">النسخ الاحتياطي وحفظ الملفات في المجلد الحالي:</label>
+              <div className="flex flex-wrap gap-2">
+                {/* زر التصدير */}
+                <button
+                  onClick={handleExportJSON}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-xl text-xs font-semibold transition-all"
+                  title="تحميل قاعدة البيانات الحالية كملف JSON لحفظه في المجلد"
+                >
+                  <Download size={14} className="text-teal-600" />
+                  تصدير كملف JSON
+                </button>
+
+                {/* زر الاستيراد */}
+                <label className="flex items-center gap-1.5 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-xl text-xs font-semibold cursor-pointer transition-all">
+                  <Upload size={14} className="text-sky-600" />
+                  <span>استيراد ملف JSON</span>
+                  <input
+                    type="file"
+                    accept=".json"
+                    onChange={handleImportJSON}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+              <p className="text-[10px] text-slate-400 leading-relaxed">
+                * يمكنك نسخ ملف JSON الناتج وحفظه في مجلد المشروع الخاص بك كملف قاعدة بيانات حقيقي!
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* --- منطقة التصدير والطباعة (التي تظهر بالكامل بالـ PNG و PDF) --- */}
       <div
