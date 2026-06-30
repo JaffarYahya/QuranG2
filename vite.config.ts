@@ -3,6 +3,6 @@ import react from '@vitejs/plugin-react'
 
 // https://vite.dev/config/
 export default defineConfig({
-  base: '/QuranG2/',
+  base: '/QuranG1/',
   plugins: [react()],
 })
